@@ -7,35 +7,19 @@ import torch.autograd as autograd
 from torchvision import datasets, transforms
 import numpy as np
 from torch.nn import Parameter
+from sklearn import linear_model
 
 # LeNet Model definition
 class LogitReg(nn.Module):
-    def __init__(self, iterations, D_in, D_out, N):
+    def __init__(self, max_iter, D_in, D_out, N, weight_decay, random_seed = 7):
+        torch.manual_seed(random_seed)
         super(LogitReg, self).__init__()
+        self.D_in = D_in
+        self.D_out = D_out
         self.fc1 = nn.Linear(D_in, D_out, bias=False)
-        self.iterations = iterations
-        self.fc1.weight = Parameter(torch.zeros(D_out,D_in), requires_grad = True)
-        C = 1.0 / (self.num_train_examples * self.weight_decay)   
-        self.num_train_examples = N     
-        
-        self.sklearn_model = linear_model.LogisticRegression(
-            C=C,
-            tol=1e-8,
-            fit_intercept=False, 
-            solver='lbfgs',
-            multi_class='multinomial',
-            warm_start=True, #True
-            max_iter=max_lbfgs_iter)
-
-        C_minus_one = 1.0 / ((self.num_train_examples - 1) * self.weight_decay)
-        self.sklearn_model_minus_one = linear_model.LogisticRegression(
-            C=C_minus_one,
-            tol=1e-8,
-            fit_intercept=False, 
-            solver='lbfgs',
-            multi_class='multinomial',
-            warm_start=True, #True
-            max_iter=max_lbfgs_iter) 
+        self.iterations = max_iter
+        self.num_train_examples = N  
+        self.weight_decay = weight_decay
         
     def forward(self, X):
         h1_output = self.fc1(X)
@@ -44,22 +28,32 @@ class LogitReg(nn.Module):
     
     def loss_fn(self, X, y):
         output = self.forward(X)
-        #print(output)
         loss = F.nll_loss(output, y)
-        #print( "loss {}".format(loss))
         return loss
         
-    def fit(self, X, y, batch_size = 1400, max_iter = 100):
-        optimizer = torch.optim.LBFGS(self.parameters(), lr=0.1, max_iter=100)
-        def closure():
-            
-            optimizer.zero_grad()
-            loss = self.loss_fn(X,y)
-            loss.backward()
-            return loss
+    def fit(self, X, y, max_iter = 100, verbose = True):
+        num_train_examples = X.shape[0]
 
-                
-        optimizer.step(closure)
+        C = 1.0 / (num_train_examples * self.weight_decay) 
+        self.model = linear_model.LogisticRegression(
+            C=C,
+            tol=1e-8,
+            fit_intercept=False, 
+            solver='lbfgs',
+            multi_class='multinomial',
+            warm_start=True, #True
+            max_iter= self.iterations)
+
+
+        self.model.fit(X, y)
+        w = np.array(self.model.coef_)
+       
+        self.set_model_params(w)
+
+        if verbose:
+            print('LBFGS training took %s iter.' % self.model.n_iter_)
+            print('After training with LBFGS: ')
+            
     
     def predict(self, X):
         y = self.forward(X)
@@ -73,3 +67,16 @@ class LogitReg(nn.Module):
         c = a/b
         c.type(torch.FloatTensor)
         return c
+
+    def set_model_params( self, w ):
+        w = torch.from_numpy(w)
+        w = w.float()
+        self.fc1.weight = Parameter(w, requires_grad = True)
+
+    def get_all_params(self ):
+        params = list(self.parameters())
+        w1 = np.transpose(params[0].detach().numpy())
+
+        return w1
+
+        

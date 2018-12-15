@@ -15,15 +15,11 @@ class Hessian(object):
     Multi-class classification.
     """
 
-    def __init__(self, model, X_train, Y_train, X_test,  Y_test, X_leave, Y_leave):
+    def __init__(self, model, X_train, Y_train):
         np.random.seed(0)
         self.model = model
         self.X_train = X_train
-        self.X_test = X_test
-        self.X_leave = X_leave
         self.Y_train = Y_train
-        self.Y_test = Y_test
-        self.Y_leave = Y_leave
         self.vec_to_list = self.get_vec_to_list_fn()
         self.num_train_examples = self.X_train.shape[0]
 
@@ -32,7 +28,7 @@ class Hessian(object):
         self.loss = self.model.loss_fn(X, y)
         self.grad = self.get_gradients(self.loss)
 
-    def get_inverse_hvp_cg(self, v):
+    def get_inverse_hvp_cg(self, v, max_iterations = 10):
             
             self.initialize(self.X_train, self.Y_train)
             fmin_loss_fn = self.get_fmin_loss_fn(v)
@@ -46,46 +42,40 @@ class Hessian(object):
                 fhess_p= self.get_fmin_hvp,
                 callback=cg_callback,
                 avextol=1e-8,
-                maxiter=8) 
+                maxiter= max_iterations) 
 
             return self.vec_to_list(fmin_results)
 
 
     def get_fmin_grad_fn(self, v):
             def get_fmin_grad(x):
-                print("fmin_grad_fn called")
                 hessian_vector_val = self.get_hvp(self.vec_to_list(x))
                 
                 return hessian_vector_val - v
             return get_fmin_grad
 
     def get_fmin_hvp(self, x, v):
-        print("fmin_hvp called")
-        print("x {}".format(np.linalg.norm(x)))
+      
         hessian_vector_val = self.get_hvp(self.vec_to_list(v))
 
         return hessian_vector_val
 
     def get_hvp(self, v):
-        print("get_hvp called")
+       
         v = torch.from_numpy(np.array(v))[0]
-        print(v.shape)
-
         hessian_vector_val = self.hvp_computation(self.grad, v)
-        print("HVP_norm {}".format(torch.norm(hessian_vector_val)))
         return hessian_vector_val.detach().numpy()
 
     def get_fmin_loss_fn(self, v):
 
         def get_fmin_loss(x):
-            print("loss function called")
             hessian_vector_val = self.get_hvp(self.vec_to_list(x))
 
             return 0.5 * np.dot(hessian_vector_val, x) - np.dot(v, x)
         return get_fmin_loss
 
 
-    def get_cg_callback(self, v):
+    def get_cg_callback(self, v, verbose = False):
             fmin_loss_fn = self.get_fmin_loss_fn(v)
             
             def fmin_loss_split(x):
@@ -97,19 +87,21 @@ class Hessian(object):
                 # x is current params
                 v = self.vec_to_list(x)
                 idx_to_remove = 5
-                print( "x {}".format(np.linalg.norm(x)))
+                
+                if verbose:
+                    print( "x {}".format(np.linalg.norm(x)))
 
                      
-                train_grad_loss_val = self.get_gradients(self.model.loss_fn(self.X_leave, self.Y_leave))
+                #train_grad_loss_val = self.get_gradients(self.model.loss_fn(self.X_leave, self.Y_leave))
 
-                train_grad_loss_val = train_grad_loss_val.detach().numpy()
-                predicted_loss_diff = np.dot(v, train_grad_loss_val) / self.num_train_examples
+                #train_grad_loss_val = train_grad_loss_val.detach().numpy()
+                #predicted_loss_diff = np.dot(v, train_grad_loss_val) / self.num_train_examples
 
-                print("Train_grad_norm {} ".format(np.linalg.norm(train_grad_loss_val)) )
-                print('Function value: %s' % fmin_loss_fn(x))
-                quad, lin = fmin_loss_split(x)
-                print('Split function value: %s, %s' % (quad, lin))
-                print('Predicted loss diff %s' % (predicted_loss_diff))
+                #print("Train_grad_norm {} ".format(np.linalg.norm(train_grad_loss_val)) )
+                    print('Function value: %s' % fmin_loss_fn(x))
+                    quad, lin = fmin_loss_split(x)
+                    print('Split function value: %s, %s' % (quad, lin))
+                #print('Predicted loss diff %s' % (predicted_loss_diff))
 
             return cg_callback
 
@@ -210,25 +202,16 @@ class Hessian(object):
             hessian[idx] = g2
         return hessian
 
+    def get_loss_gradient(self, x, y):
+        self.clear_grad()
+        loss = self.model.loss_fn(x,y)
+        grad = self.get_gradients(loss)
+        return grad, loss
+    
     def influence_up(self, x_test, y_test, x_tr, y_tr, X_train, Y_train):
-        
-        #Get derivative w.r.t removed train function
-        self.clear_grad()
-        tr_loss = self.model.loss_fn(x_tr,y_tr)
-        #print("training_leave_loss {}".format(tr_loss))
-        tr_grad = self.get_gradients(tr_loss)
-
-        #Get derivative w.r.t loss of test variable
-        self.clear_grad()
-        test_loss = self.model.loss_fn(x_test,y_test)
-        #print("test_leave_loss {}".format(test_loss))
-        test_grad = self.get_gradients(test_loss)
-        
-        #Get Hessian w.r.t whole training data
-        self.clear_grad()
-        loss = self.model.loss_fn(X_train, Y_train)
-        #print("all_loss {}".format(loss))
-        train_grad = self.get_gradients(loss)
+        tr_grad, tr_loss = self.get_loss_gradient(x_tr, y_tr)
+        test_grad, test_loss = self.get_loss_gradient(x_test, y_test)
+        train_grad, loss = self.get_loss_gradient(X_train, Y_train)
         
         return tr_grad, test_grad, train_grad, tr_loss, test_loss, loss
 
@@ -256,6 +239,37 @@ class Hessian(object):
         print("influence {}".format(influence))
 
         return influence, hessian_product, train_grad, test_grad, train_grad_all, tr_loss, test_loss, loss
+    
+    def stochastic_hessian_Lissa( h, X_train, y_train, v, max_iter = 1, num_samples = 1, depth = 10000, scale = 10, batch_size = 10):
+        
+        print_iter = 100
+        loss_fn = h.get_fmin_loss_fn(v)
+        x = np.zeros_like(v)
+        final_estimate = np.zeros_like(v)
+        for iter in range(max_iter):
+            for i in range(num_samples):
+                print(x.shape)
+                X_i_0 = h.get_fmin_hvp(x, x) - v
+                X_i_prev = X_i_0
+                for j in range(depth):
+                    np.random.seed()
+                    indices = np.random.choice(N, batch_size)
+                    X = X_train[indices,:]
+                    y = y_train[indices]
+                    h.initialize(X,y)
+                    X_i_current =  X_i_0 + X_i_prev - h.get_fmin_hvp( x, X_i_prev)/scale 
+                    X_i_prev = X_i_current
+                    
+                    if (j % print_iter == 0) or (j == depth - 1):
+                        print("Recursion at depth %s: norm is %.8lf" % (j, np.linalg.norm(X_i_current)))
+
+                final_estimate = final_estimate + X_i_prev/scale
+
+            final_estimate = final_estimate/num_samples
+
+            x = x - final_estimate
+            print("Function value at iter {} and estimate {}".format( iter, loss_fn(x)))
+        return x
 
 
 
