@@ -23,14 +23,22 @@ class Hessian(object):
         self.vec_to_list = self.get_vec_to_list_fn()
         self.num_train_examples = self.X_train.shape[0]
 
-    def initialize(self, X, y):
+    def initialize(self, X, y, grad=None):
         self.clear_grad()
-        self.loss = self.model.loss_fn(X, y)
-        self.grad = self.get_gradients(self.loss)
+        if grad is None:
+            self.loss = self.model.loss_fn(X, y)
+            self.grad = self.get_gradients(self.loss)
+        else:
+            criterion = nn.CrossEntropyLoss()
+            self.loss = criterion(self.model(X), y)
+            self.grad = grad
 
-    def get_inverse_hvp_cg(self, v, max_iterations = 10):
+    def get_inverse_hvp_cg(self, v, max_iterations = 10, grad=None):
             
-            self.initialize(self.X_train, self.Y_train)
+            if( isinstance(v, torch.Tensor) ):
+                v = v.detach().numpy()
+                
+            self.initialize(self.X_train, self.Y_train, grad=grad)
             fmin_loss_fn = self.get_fmin_loss_fn(v)
             fmin_grad_fn = self.get_fmin_grad_fn(v)
             cg_callback = self.get_cg_callback(v)
@@ -44,34 +52,43 @@ class Hessian(object):
                 avextol=1e-8,
                 maxiter= max_iterations) 
 
-            return self.vec_to_list(fmin_results)
+            return fmin_results
 
 
     def get_fmin_grad_fn(self, v):
             def get_fmin_grad(x):
-                hessian_vector_val = self.get_hvp(self.vec_to_list(x))
+                hessian_vector_val = self.get_hvp(x)
                 
                 return hessian_vector_val - v
             return get_fmin_grad
 
     def get_fmin_hvp(self, x, v):
       
-        hessian_vector_val = self.get_hvp(self.vec_to_list(v))
+        hessian_vector_val = self.get_hvp(v)
 
         return hessian_vector_val
 
     def get_hvp(self, v):
-       
-        v = torch.from_numpy(np.array(v))[0]
-        hessian_vector_val = self.hvp_computation(self.grad, v)
-        return hessian_vector_val.detach().numpy()
+        
+        if( isinstance(v, np.ndarray) ):
+            val = torch.from_numpy(v)
+        else:
+            val = v
+            
+        hessian_vector_val = self.hvp_computation(self.grad, val)  
+        if( isinstance(v, np.ndarray) ):
+            return hessian_vector_val.detach().numpy()
+        else:
+            return hessian_vector_val
 
     def get_fmin_loss_fn(self, v):
-
         def get_fmin_loss(x):
-            hessian_vector_val = self.get_hvp(self.vec_to_list(x))
-
-            return 0.5 * np.dot(hessian_vector_val, x) - np.dot(v, x)
+            hessian_vector_val = self.get_hvp(x)
+            if( isinstance(v, np.ndarray) ):
+                return 0.5 * np.dot(hessian_vector_val, x) - np.dot(v, x)
+            else:
+                return 0.5 * torch.dot(hessian_vector_val, x) - torch.dot(v, x)
+            
         return get_fmin_loss
 
 
@@ -79,13 +96,12 @@ class Hessian(object):
             fmin_loss_fn = self.get_fmin_loss_fn(v)
             
             def fmin_loss_split(x):
-                hessian_vector_val = self.get_hvp(self.vec_to_list(x))
+                hessian_vector_val = self.get_hvp(x)
 
                 return 0.5 * np.dot(hessian_vector_val, x), - np.dot(v, x)
 
             def cg_callback(x):
                 # x is current params
-                v = self.vec_to_list(x)
                 idx_to_remove = 5
                 
                 if verbose:
@@ -111,9 +127,10 @@ class Hessian(object):
             return_list = []
             cur_pos = 0
             for p in self.model.parameters():
-                length = p.view(-1).shape[0]
-                return_list.append(v[cur_pos : cur_pos+length])
-                cur_pos += length
+                if p.grad is not None:
+                    length = p.grad.view(-1).shape[0]
+                    return_list.append(v[cur_pos : cur_pos+length])
+                    cur_pos += length
 
             assert cur_pos == len(v)
             return return_list
@@ -134,7 +151,8 @@ class Hessian(object):
 
     def get_gradients(self, loss):
         grads = autograd.grad(loss, self.model.parameters(), create_graph=True)
-        return torch.cat([g.view(-1) for g in grads])
+        return grads
+        #return torch.cat([g.view(-1) for g in grads])
 
     def get_hessian_product(self, loss, vector, print_output = False, max_iterations = 10 ):
         
@@ -144,8 +162,8 @@ class Hessian(object):
         return result
 
     def hvp_computation(self, grad, v, damping = 1e-2):
-        result = autograd.grad(torch.sum(grad* Variable(v)), self.model.parameters(), retain_graph=True, create_graph=True)
-        r = torch.cat([g.view(-1) for g in result])
+        result = autograd.grad(torch.sum(grad* Variable(v)), self.model.parameters(), retain_graph=True, create_graph=True, allow_unused=True)
+        r = torch.cat([g.view(-1) for g in result if g is not None])
         r = r + damping*v
         return r
 
@@ -239,37 +257,3 @@ class Hessian(object):
         print("influence {}".format(influence))
 
         return influence, hessian_product, train_grad, test_grad, train_grad_all, tr_loss, test_loss, loss
-    
-    def stochastic_hessian_Lissa( h, X_train, y_train, v, max_iter = 1, num_samples = 1, depth = 10000, scale = 10, batch_size = 10):
-        
-        print_iter = 100
-        loss_fn = h.get_fmin_loss_fn(v)
-        x = np.zeros_like(v)
-        final_estimate = np.zeros_like(v)
-        for iter in range(max_iter):
-            for i in range(num_samples):
-                print(x.shape)
-                X_i_0 = h.get_fmin_hvp(x, x) - v
-                X_i_prev = X_i_0
-                for j in range(depth):
-                    np.random.seed()
-                    indices = np.random.choice(N, batch_size)
-                    X = X_train[indices,:]
-                    y = y_train[indices]
-                    h.initialize(X,y)
-                    X_i_current =  X_i_0 + X_i_prev - h.get_fmin_hvp( x, X_i_prev)/scale 
-                    X_i_prev = X_i_current
-                    
-                    if (j % print_iter == 0) or (j == depth - 1):
-                        print("Recursion at depth %s: norm is %.8lf" % (j, np.linalg.norm(X_i_current)))
-
-                final_estimate = final_estimate + X_i_prev/scale
-
-            final_estimate = final_estimate/num_samples
-
-            x = x - final_estimate
-            print("Function value at iter {} and estimate {}".format( iter, loss_fn(x)))
-        return x
-
-
-

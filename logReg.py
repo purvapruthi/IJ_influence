@@ -78,5 +78,10 @@ class LogitReg(nn.Module):
         w1 = np.transpose(params[0].detach().numpy())
 
         return w1
+    
+    def clear_grad(self):
+        for p in self.parameters():
+            if p.grad is not None:
+                p.grad.data.zero_()
 
         

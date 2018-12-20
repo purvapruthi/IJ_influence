@@ -1,0 +1,12 @@
+Code to generate figures is mainly in two ipython notebooks
+1. Hessian_approximation_k_leave_out.ipynb - To calculate and compare hessian inverse using Newton-CG and Lissa method.
+2. Perturbation_k_leave_out.ipynb - Generate multi-point perturbations using adverserial attack.
+
+Both of above ipython notebooks generate plots using pre-saved data which will be too big to upload. 
+Sample inputs can be generated usig provided notebooks. These notebooks import following python files.
+
+1. LogReg.py - Logistic Regression Model
+2. hessian.py - Calculates hessian using Newton-CG
+3. experiments.py - Calculates hessian using Lissa
+4. influence.py - Calculates influence for different re-weightings 1-leave-ou/K-leave-out/adverserial
+5. util.py - Utility functions to split data

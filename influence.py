@@ -16,10 +16,11 @@ from torch.nn import Parameter
 
 def perturbation( model, x, y, epsilon = 0.25, weight = 0):
     x.requires_grad = True
+    model.clear_grad()
     loss = model.loss_fn(x,y)
     x_grads = torch.autograd.grad(loss, x)
     x_grad = torch.cat([g.view(-1) for g in x_grads])
-    perturbed_ex = weight*x + epsilon
+    perturbed_ex = weight*x + epsilon * torch.sign(x_grad)
     x.requires_grad = False
     return perturbed_ex
 
@@ -167,24 +168,27 @@ def influence_k_leave_out( model, X_train, y_train, X_test, y_test, random = Tru
 def influence_perurbation(model, X_train, y_train, X_test, y_test, num_to_remove=5, random_seed=7, 
 verify_influence = False, epsilon = 0.25, weight = 0, load_refresh=False):
     print( "Epsilon: {}\n".format(epsilon))
+    
     test_idx = 8
     N = model.num_train_examples
-    indices_to_remove = np.random.choice(N, num_to_remove)
-    actual_params_diff = np.zeros(num_to_remove)
+    actual_params_diff =  np.zeros((num_to_remove,7840))
     actual_loss_diff = np.zeros(num_to_remove)
-    predicted_params_diff = np.zeros(num_to_remove)
+    
+    predicted_params_diff = np.zeros((num_to_remove,7840))
     predicted_loss_diff =  np.zeros(num_to_remove)
+    
     original_labels = np.zeros((num_to_remove, 5))
     perturbed_labels = np.zeros((num_to_remove, 5))
+    
     K = 100
     
     tr_indices = []
     
     for i in range(num_to_remove):
-        
         orig_label = 1
         pred_label = 1
-        while( orig_label == pred_label ):
+        tr_idx = -1
+        while( orig_label == pred_label or (tr_idx in tr_indices) ):
             np.random.seed()
             tr_idx = np.random.choice(N,1)
             X_tr, y_tr, X_te, y_te = split_data( tr_idx, test_idx, X_train, y_train, X_test, y_test)
@@ -196,14 +200,12 @@ verify_influence = False, epsilon = 0.25, weight = 0, load_refresh=False):
             
             orig_label = model.predict(X_tr)
             pred_label = model.predict(X_pert)
-        
-        if( tr_idx in tr_indices):
-            continue
-            
+    
         tr_indices.append(tr_idx)
         if( i % K == 0):
             print("original_prediction {} original label {}".format( orig_label, y_tr))
             print("perturbed_prediction {} original label {}".format( pred_label, y_tr))
+            
         original_labels[i, 0] = orig_label
         original_labels[i, 1] = torch.max(model.forward(X_tr))
         original_labels[i, 2] = y_tr
@@ -224,75 +226,48 @@ verify_influence = False, epsilon = 0.25, weight = 0, load_refresh=False):
 
         perturb_train_grad, pert_loss = h.get_loss_gradient(X_pert, y_tr)
 
-        #diff_v = train_grad
-        diff_v = perturb_train_grad - train_grad
+        diff_v = train_grad -  perturb_train_grad
+        v = diff_v.detach().numpy()
+        hvp = np.array(h.get_inverse_hvp_cg(v, max_iterations = 100))/N
+        
+        predicted_params_diff[i,:] = hvp
+        predicted_loss_diff[i] =  np.sum(hvp * train_grad.detach().numpy())
 
-        filename = "../data/perturbation/hp_inv_pert" + str(tr_idx) + "_" + str(epsilon) + "_" + str(weight) +".npz"
-        my_file = Path(filename)
-
-        if my_file.is_file() and load_refresh == False:
-            if( i % K == 0):
-                print( "Loading hvp inverse from file {}".format(filename))
-            hvp = np.load(filename)["h"][0]
-            
-        else:
-            v = diff_v.detach().numpy()
-            #print("Calculating HVP inverse")
-            hvp = h.get_inverse_hvp_cg(v, max_iterations = 100)
-            np.savez(filename, h = hvp)
-
-        ans = np.linalg.norm(np.array(hvp)/N)
-        #print("Answer {}".format(ans))
-        predicted_params_diff[i] = ans
-        #print(predicted_params_diff[i])
-        predicted_loss_diff[i] = np.sum(hvp * train_grad.detach().numpy())/N
-
-        if( verify_influence):
+        if(verify_influence):
             cls_leave = LogitReg(model.iterations, model.D_in, model.D_out, N, model.weight_decay)
-            X = X_train
+            X = X_train.clone()
             
             if( torch.sum(X_pert) == 0):
                 number = np.array(range(N))
-                number = np.delete(number, indices_to_remove[i])
+                number = np.delete(number, tr_idx)
                 X = X[number,:]
                 y = y_train[number]
             else:
-                if( indices_to_remove[i] >= N ):
-                    print(indices_to_remove[i])
-                    
-                X[indices_to_remove[i], :] = X_pert.detach()
-                y = y_train
+                X[tr_idx, :] = X_pert.detach()
+                y = y_train.clone()
             
-            print(X.shape)
+          
             cls_leave.fit( X.detach(), y)
-            
-            retrained_orig = cls_leave.predict(X_tr)
-            retrained_perturb = cls_leave.predict(X_pert)
-            if( i % K == 0):
-                print("original_prediction on retrained model {} original label {}", retrained_orig, y_tr)
-                print("perturbed_prediction on retrained model {} original label {}", retrained_perturb, y_tr)
-                print("Saving_Results at i {}".format(i))
-                np.savez("../data/perturbation/loss_diffs_perturb_" + str(epsilon) + "_" +".npz",r = { "idx": tr_indices, 
-                                                    "orig_labels":original_labels,
-                                                    "pert_labels": perturbed_labels,"predicted_loss":predicted_params_diff, 
-                                                    "actual_loss": actual_params_diff})
-                
-                  
-            
-            original_labels[i,3] = retrained_orig
-            original_labels[i,4] = torch.argmax(cls_leave.forward(X_tr))
-            perturbed_labels[i,3] = retrained_perturb
-            perturbed_labels[i,4] = torch.argmax(cls_leave.forward(X_pert))
+     
+            original_labels[i,3] = cls_leave.predict(X_tr)
+            original_labels[i,4] = torch.max(cls_leave.forward(X_tr))
+            perturbed_labels[i,3] = cls_leave.predict(X_pert)
+            perturbed_labels[i,4] = torch.max(cls_leave.forward(X_pert))
         
             actual_difference = cls_leave.fc1.weight.view(-1) - model.fc1.weight.view(-1)
-            actual_params_diff[i] = np.linalg.norm(actual_difference.detach().numpy())
+            actual_params_diff[i,:] = actual_difference.detach().numpy()
             actual_loss_diff[i] = cls_leave.loss_fn(X_tr, y_tr) - model.loss_fn(X_tr, y_tr)
-            
+        
             if( i % K == 0):
-                print( "Predicted params diff {} actual params diff {}".format(predicted_params_diff[i], actual_params_diff[i]))
                 print( "Predicted loss diff {} actual loss diff {}".format(predicted_loss_diff[i], actual_loss_diff[i]))
-    print("Saving_Results at i {}".format(i))
-    np.savez("../data/perturbation/loss_diffs_perturb_" + str(epsilon) + "_" +".npz",r = { "idx": tr_indices, 
+                
+    np.savez("../data/perturbation_1/loss_diffs_perturb_" + str(epsilon) + "_" +".npz",r = { "idx": tr_indices, 
                                                     "orig_labels":original_labels,
-                                                    "pert_labels": perturbed_labels,"predicted_loss":predicted_params_diff, 
-                                                    "actual_loss": actual_params_diff}) 
+                                                    "pert_labels": perturbed_labels,
+                                                    "predicted_loss": predicted_loss_diff,
+                                                    "actual_loss": actual_loss_diff})
+    
+    np.savez("../data/perturbation_1/loss_diffs_perturb_params" + str(epsilon) + "_" +".npz",r = { "idx": tr_indices, 
+                                                    
+                                                    "predicted_params":predicted_params_diff, 
+                                                    "actual_params": actual_params_diff }) 
