@@ -7,8 +7,7 @@ In:Proceedings of the 34th International Conference on Machine Learning.Ed. by D
 Whye Teh. Vol. 70. Proceedings of Machine LearningResearch.  International  Convention  Centre,  
 Sydney,  Australia:  PMLR,  June  2017,](https://arxiv.org/pdf/1703.04730.pdf)
 
-2. [Ryan  Giordano  et  al.  “A  Swiss  Army  Infinitesimal  Jackknife”.  
-In:arXiv e-prints,arXiv:1806.00550 June 2018, arXiv:1806.00550. arXiv] (https://arxiv.org/abs/1806.00550)
+2. [Ryan  Giordano  et  al.  “A  Swiss  Army  Infinitesimal  Jackknife”](https://arxiv.org/abs/1806.00550)
 
 
 
